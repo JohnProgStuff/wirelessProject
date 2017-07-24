@@ -1,0 +1,417 @@
+dim result
+dim endpoint
+dim in(20) # endpoint data in
+dim in_len
+dim out(20) # endpoint data out
+dim out_len
+
+dim custom_adv_data(9)
+
+dim bond_count
+dim bond_enum_counter
+
+# connection_info structure:
+# - 0: connected/encrypted/bonded flag (bits 0, 1, 2)
+# - 1: disconnection action flags (bit 0 = add to whitelist, bit 1 = resume unfiltered advertising)
+# - 2-7: current or last connected MAC address
+# - 8: current or last connected address type
+# - 9: current or last connected bond handle
+dim connection_info(10)
+
+dim ret_result
+
+dim ret_value_len
+dim ret_value_data(7)
+
+# temporary buffer used for storing and echoing hex data as ASCII
+dim temp_buf(4)
+
+event system_boot(major, minor, patch, build, ll_version, protocol_version, hw)
+    # enable rising-edge interrupt detection on P0_0 and P0_1
+    # - P0_0 is used to restart advertising without filters if we currently are not
+    # - P0_1 is used to clear all bonding/whitelist info and start fresh
+    call hardware_io_port_config_irq(0, $03, 0) #P0_0 & P0_1 ... port, mask,
+    # enable bondable mode
+    call sm_set_bondable_mode(1) 
+    # initialize connection status to empty (not connected, etc.)
+	memset(connection_info(0), 0, 10)
+	connection_info(9:1) = $ff # bond data is 0xFF to indicate nothing
+    # NOTE: you have to initialize whitelist BEFORE enabling filtering or entering
+    # any advertising/scanning modes
+    # check to see if we have any bond info yet
+    bond_enum_counter = 0
+    call system_endpoint_tx(system_endpoint_uart1, 20, "Current bond count: ")
+    call sm_get_bonds()(bond_count) #response is the number or bonds, we want to save it in bond_count
+		#the above call should always respond with 0 or 1. we don't want to bond with more than one device until
+		# we add the front derailleur.
+    call system_endpoint_tx(system_endpoint_uart1,1,bond_count+$30) # convert to ASCII (always 0-8)
+    call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+    # now we use sm_bond_status events defined below to enumerate through all
+    # bonds and load the correct stored addresses from PS keys one at a time
+        # if we don't have any bonds yet, then assume we want to advertise with
+        # no filtering so that any device can connect at will
+    
+    custom_adv_data(0:1) = $04 #Length of adv data
+    custom_adv_data(1:1) = $ff #AD type is Manufacturer Specific Data AD type
+    custom_adv_data(2:1) = $47 #Bluegiga Company Identifier Code - octet 2
+    custom_adv_data(3:1) = $00 #Bluegiga Company Identifier Code - octet 1
+    custom_adv_data(4:1) = $e5 #Custom data indicating other side that we support spp_over_ble - or use line below
+    #custom_adv_data(4:1) = $e6 #Custom data indicating a remote bled112 to reboot in dfu mode
+    custom_adv_data(5:1) = $03 #Length of next adv data
+    custom_adv_data(6:1) = $09 # AD type is Complete local name
+    custom_adv_data(7:1) = $45 #E
+    custom_adv_data(8:1) = $54 #T
+	#call gap_set_adv_data(set_scanrsp, adv_data_len, adv_data_data)(
+    call gap_set_adv_data(1, 9, custom_adv_data(0:9)) #overwrites the friendly name in gatt.xml with ET but also allows closed system's companion module-dongle to automatically connect
+    ##call gap_set_mode(gap_user_data, gap_undirected_connectable)
+    
+	
+	
+    	endpoint = system_endpoint_uart1
+		call system_endpoint_tx(endpoint, 50, "\n\r** Boot: Slave, GATT Server ** Version: 0.8 **\r\n")
+		
+		if bond_count = 0 then
+			# advertise without filters
+			call gap_set_filtering(gap_scan_policy_all, gap_adv_policy_all, 0)
+			# call gap_set_mode(gap_user_data, gap_undirected_connectable)
+			#call gap_set_adv_data(1, 9, custom_adv_data(0:9)) #overwrites the friendly name in gatt.xml with ET but also allows closed system's companion module-dongle to automatically connect
+			call gap_set_mode(gap_user_data, gap_undirected_connectable)
+			#call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+			call system_endpoint_tx(system_endpoint_uart1, 32, "Start UNFILT.ERED advertising \r\n")
+		end if	
+	call system_endpoint_set_watermarks(endpoint, 0, 0) # disable watermarks
+    
+end
+#----------------------------------------------------------------------------------------
+# the slave connection event only sends UART to the slave MCU
+# outputs: UART calls only
+# inputs: lots
+# connection_info(0:1) -> connected true=1 false=0
+# connection_info(1:1) -> disconnection event actions use this flag 
+# connection_info(2:6) -> remote device BT address is 6 bytes
+# connection_info(8:1) -> address_type
+# connection_info(9:1) -> bonding $ff-none anything else is its 8 bit bonding info
+event connection_status(connection, flags, address, address_type, conn_interval, timeout, latency, bonding)
+		#call system_endpoint_tx(endpoint, 18, "\n\r++ Connected ++\r")
+		#call system_endpoint_tx(endpoint, 26, "\n\r++ Connection interval: ")
+		#call system_endpoint_tx(endpoint, 4, conn_interval)
+		#call system_endpoint_tx(endpoint, 4, " ++\n")
+		
+    if (flags & $05) = $05 then
+        # connection established
+        call system_endpoint_tx(system_endpoint_uart1, 12, " Connect-ed ")
+        # display current bond status
+        if bonding < $ff then
+            call system_endpoint_tx(system_endpoint_uart1, 18, "(already bonded,  ")
+            call system_endpoint_tx(system_endpoint_uart1, 1, bonding + $30)
+            call system_endpoint_tx(system_endpoint_uart1, 3, ")\r\n")
+        else
+            call system_endpoint_tx(system_endpoint_uart1, 14, "(not bonded)\r\n")
+        end if
+        # update connection info (connected = true)
+        connection_info(0:1) = connection_info(0:1) | 1
+        # clear "disconnection actions" flag so we don't re-use old settings
+        connection_info(1:1) = 0
+        # copy address information into placeholders
+        memcpy(connection_info(2), address(0), 6)
+        connection_info(8:1) = address_type
+    end if
+    if (flags & $02) = $02 then
+        # encryption started
+        call system_endpoint_tx(system_endpoint_uart1, 10, "Encrypted ")
+        # display current bond status
+        if bonding < $ff then
+            call system_endpoint_tx(system_endpoint_uart1, 17, "(already bonded, ")
+            call system_endpoint_tx(system_endpoint_uart1, 1, bonding + $30)
+            call system_endpoint_tx(system_endpoint_uart1, 3, ")\r\n")
+        else
+            call system_endpoint_tx(system_endpoint_uart1, 14, "(not bonded)\r\n")
+        end if
+        # update connection info (encrypted = true)
+        connection_info(0:1) = connection_info(0:1) | 2
+        # cancel the pending one-shot encryption timer, if running
+        call hardware_set_soft_timer(0, 1, 1)
+    else
+        # request encryption if not encrypted already
+        if bonding = $ff then
+            # not bonded or encrypted, so request both
+            call system_endpoint_tx(system_endpoint_uart1, 26, "Asking for encryption...\r\n")
+            call sm_encrypt_start(connection, 1)
+        else
+            # update connection info (bonded = true)
+            connection_info(0:1) = connection_info(0:1) | 4            
+            # start one-shot encryption attempt timer in case the remote side
+            # doesn't attempt an encrypted link within 1 second (this might
+            # happen if you bond with a smartphone and then remove the pairing
+            # info from the phone side, but not the local module side)
+            call hardware_set_soft_timer(32768, 1, 1)
+        end if
+    end if
+	# copy bond flag to status buffer
+	connection_info(9:1) = bonding
+end
+
+#----------------------------------------------------------------------------------------
+event hardware_soft_timer(handle)
+    if handle = 1 then
+        call system_endpoint_tx(system_endpoint_uart1, 26, "Asking for encryption...\r\n")
+        # other side hasn't tried an encrypted link yet even though we are
+        # bonded as far as we know anyway, so try to start it from this end
+        # ("connection" value here is always 0 since we are a peripheral,
+        # and peripherals only support a single connection at a time)
+        call sm_encrypt_start(0, 1)
+    end if
+end
+
+#----------------------------------------------------------------------------------------
+#attributes_status checks to see if it is connected right and only sends 
+# outputs: UART calls only
+# handle(xgatt_data), flags 
+event attributes_status(handle, flags)
+       #call system_endpoint_tx(endpoint, 57, "\n\r attr_status") #for debugging
+    if (handle = xgatt_data) && (flags = 2) then
+       call system_endpoint_tx(endpoint, 62, "\n\r++ Local CCC flagged by remote side to start indications ++\r")
+       call system_endpoint_tx(endpoint, 46, "\n\r++ Transparent data exchange can start ++\n\n\r")
+       call system_endpoint_set_watermarks(endpoint, 1, 0) # set RX watermark
+    end if
+end
+
+#----------------------------------------------------------------------------------------
+# watermark_RX is used to get data from the MCU
+# inputs: UART from MCU, length of message
+# outputs: back to UART, sends to xgatt_data
+event system_endpoint_watermark_rx(curr_endpoint, size)
+    in_len = size
+    if in_len > 20 then
+       in_len = 20
+    end if
+    call system_endpoint_set_watermarks(endpoint, 0, $ff) # disable RX watermark
+    call system_endpoint_rx(endpoint, in_len)(result, in_len, in(0:in_len))
+    call attributes_write(xgatt_data, 0, in_len, in(0:in_len))
+end
+
+#----------------------------------------------------------------------------------------
+# attclient_indicated -> Run when the master indicates it has received the data.
+# outputs: none
+# inputs: whatConnection, handle(xgatt_data)
+event attclient_indicated(connection, handle)
+    if handle = xgatt_data then
+        call system_endpoint_set_watermarks(endpoint, 1, $ff) # set RX watermark
+    end if
+end
+
+#----------------------------------------------------------------------------------------
+# attributes_value -> Run when a local attribute value (xgatt_data)was written by a remote device(master).
+# inputs: whatConnection, handle(xgatt_data), datalength/data 
+event attributes_value(connection, reason, handle, offset, value_len, value_data)
+    if handle = xgatt_data then
+        out(0:value_len) = value_data(0:value_len)
+        out_len = value_len
+        call system_endpoint_set_watermarks(endpoint, $ff, out_len) # set TX watermark
+    end if
+    
+end
+
+#----------------------------------------------------------------------------------------
+# watermark_TX -> sends UART if there is anything in the buffer.
+event system_endpoint_watermark_tx(curr_endpoint, size)
+    #call system_endpoint_tx(endpoint, 22, "\n\n\r  \n")
+    if curr_endpoint = endpoint then
+        call system_endpoint_set_watermarks(endpoint, $ff, 0) # disable TX watermark
+        call system_endpoint_tx(endpoint, out_len, out(0:out_len)) # this line sends it.
+        call attributes_user_write_response(0, 0) # tells master device (connection=0)the xgatt_data was written,(write accepted=0)
+    end if
+end
+
+#----------------------------------------------------------------------------------------
+# bond/pair devices
+event hardware_io_port_status(timestamp, port, irq, state)
+    if port = 0 && irq = $01 then
+        call system_endpoint_tx(system_endpoint_uart1, 6, "P0_0\r\n")
+        # P0_0 button pressed
+        if (connection_info(0:1) & $01) = 0 then
+            # not currently connected, so do this immediately here (stop/restart)
+            call gap_set_mode(0, 0)
+            call gap_set_filtering(gap_scan_policy_all, gap_adv_policy_all, 0)
+            call gap_set_mode(gap_user_data, gap_undirected_connectable)
+			#call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+            call system_endpoint_tx(system_endpoint_uart1, 34, "Started UNFILT.ERED advertising3\r\n")
+        else
+            # currently connected, so disconnect and let "connection_disconnected" event handle it
+            connection_info(1:1) = connection_info(1:1) | 2
+            call system_endpoint_tx(system_endpoint_uart1, 36, "Set 'unfilt.ered-advertising' flag\r\n")
+            call connection_disconnect(0)
+        end if
+    end if
+    
+    if port = 0 && irq = $02 then
+        # P0_1 button pressed
+        call system_endpoint_tx(system_endpoint_uart1, 6, "P0_1\r\n")
+
+        # stop advertising if we are already
+        call gap_set_mode(0, 0)
+
+        # indiscriminately remove all possible bonds
+        call sm_delete_bonding($ff)
+        
+        # clear whitelist
+        call system_whitelist_clear()
+        call system_endpoint_tx(system_endpoint_uart1, 29, "All bonds/whitelist cleared\r\n")
+        
+        # reset bond count
+        bond_count = 0
+
+        # start/resume advertising as necessary
+        if (connection_info(0:1) & $01) = 0 then
+            # not currently connected, so do this immediately here
+            call gap_set_filtering(gap_scan_policy_all, gap_adv_policy_all, 0)
+            call gap_set_mode(gap_user_data, gap_undirected_connectable)
+			#call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+            call system_endpoint_tx(system_endpoint_uart1, 34, "Started UNFILT.ERED advertising4\r\n")
+        else
+            # disconnect, which will trigger "connection_disconnected" event and do the above automatically
+            call connection_disconnect(0)
+        end if
+    end if
+end
+
+#----------------------------------------------------------------------------------------
+# connection_disconnected -> Runs when a connection is disconnected.
+# it essentially starts advertising again.
+# outputs: UART data, Advertises
+event connection_disconnected(conn, reas)
+		call system_endpoint_tx(endpoint, 22, "\n\n\r-- Disconnected --\n")
+		#call system_endpoint_tx(endpoint, 16, "\r--Reason code: ")
+		#call system_endpoint_tx(endpoint, 2, reas)
+		#call system_endpoint_tx(endpoint, 4, " --\n")
+		#call system_endpoint_set_watermarks(endpoint, 0, 0) # disable watermarks
+    if (connection_info(1:1) & $01) > 0 then
+        # add current device to whitelist
+        call system_whitelist_append(connection_info(2:6), connection_info(8:1))
+        call system_endpoint_tx(system_endpoint_uart1, 30, "Added last MAC to whitelist \r\n")
+    end if
+    # restart advertising appropriately based on bond count and "connection" flag
+    if bond_count > 0 && (connection_info(1:1) & $02) = 0 then
+        #call gap_set_adv_data(1, 9, custom_adv_data(0:9))####################################
+		call gap_set_filtering(gap_scan_policy_all, gap_adv_policy_whitelist_all, 0)
+        call gap_set_mode(gap_user_data, gap_undirected_connectable)
+		#call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+        call system_endpoint_tx(system_endpoint_uart1, 30, "Started FILTERED advertising\r\n")
+    else
+        # use unfiltered if there are no bonds OR if "connection" = 2
+        # (connection flag set specially in GPIO interrupt handler)
+        #call gap_set_adv_data(1, 9, custom_adv_data(0:9))####################################
+		call gap_set_filtering(gap_scan_policy_all, gap_adv_policy_all, 0)
+        call gap_set_mode(gap_user_data, gap_undirected_connectable)
+		#call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+        call system_endpoint_tx(system_endpoint_uart1, 32, "Started UNFILTERED advertising\r\n")
+    end if
+    # clear connected/encrypted/bonded status
+    connection_info(0:1) = 0
+    #call gap_set_adv_data(1, 9, custom_adv_data(0:9))####################################
+    #call gap_set_mode(gap_user_data, gap_undirected_connectable)#########################
+
+end
+
+
+event sm_bond_status(bond, keysize, mitm, keys)
+    #if bond exist than load it to the whitelist
+	if (connection_info(0:1) & $01) = 0 then
+        # not connected, so that means we're loading at boot
+        # load 6-byte address and 1-byte address_type from PS key
+        call flash_ps_load($8000 + bond)(ret_result, ret_value_len, ret_value_data(0:ret_value_len))
+        call system_endpoint_tx(system_endpoint_uart1, 29, "Loaded MAC/type from PS key\r\n")
+
+        # add to whitelist
+        call system_whitelist_append(ret_value_data(0:6), ret_value_data(6:1))
+        call system_endpoint_tx(system_endpoint_uart1, 26, "Added stored MAC for bond ")
+        call system_endpoint_tx(system_endpoint_uart1, 1, $30 + bond)
+        call system_endpoint_tx(system_endpoint_uart1, 15, " to whitelist\r\n")
+        
+        # increment bond enumeration count and check for completion
+        bond_enum_counter = bond_enum_counter + 1
+        if bond_enum_counter >= bond_count then
+            # start advertising filter whitelist filtering
+            call gap_set_filtering(gap_scan_policy_all, gap_adv_policy_whitelist_all, 0)
+            call gap_set_mode(gap_user_data, gap_undirected_connectable)
+			#call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+            call system_endpoint_tx(system_endpoint_uart1, 31, "Started FILTERED advertising2\r\n")
+        end if
+    else #no bond exists
+        # already connected, so that means we just bonded
+
+        # update connection status (bonded = true)
+        connection_info(0:1) = connection_info(0:1) | 4
+		connection_info(9:1) = bond
+
+        # increment local bond count
+        bond_count = bond_count + 1
+
+        call system_endpoint_tx(system_endpoint_uart1, 20, "Current bond count: ")
+        call system_endpoint_tx(system_endpoint_uart1, 1, bond_count + $30) # convert to ASCII (always 0-8)
+        call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+
+        # set "add-to-whitelist" disconnection action
+        connection_info(1:1) = connection_info(1:1) | 1
+        call system_endpoint_tx(system_endpoint_uart1, 29, "Set 'add-to-whitelist' flag\r\n")
+
+        # store address+type in correct PS key slot
+        call flash_ps_save($8000 + bond, 7, connection_info(2:7))
+        call system_endpoint_tx(system_endpoint_uart1, 29, "Stored MAC/type into PS key\r\n")
+    end if
+end
+
+event sm_bonding_fail(handle, failedresult)
+    # if bonding fails, handle it gracefully based on the following possible results:
+    # - 0x018B - Out of bonds (no space left, all 8 bonding slots taken)
+    # - 0x0205 - Authentication failure (shouldn't happen with "just works" mode, but might otherwise)
+    # - 0x0206 - Pin or key missing (probably local or remote device is missing the key, but not both)
+    # - 0x0301 - Passkey entry failed (also shouldn't happen in "just works" mode unless bonding is cancelled)
+    # - 0x0302 - OOB data not available (only occurs if OOB is required and not supported on both ends)
+    # - 0x0303 - Authentication requirements (I/O capabilities required but not supported)
+    # - 0x0304 - Confirm value failed (PIN entry/comparison attempted but failed)
+    # - 0x0305 - Pairing not supported (also occurs if bond info removed from remote device but not local module)
+    # - 0x0306 - Encryption key size (key size insufficient to meet security requirements)
+    # - 0x0307 - Command not supported (SMP command is not supported on this device)
+    # - 0x0308 - Unspecified reason (may occur if bond info is present remotely but not locally)
+    # - 0x0309 - Repeated attempts (too little time has elapsed since last pairing/security request)
+    # - 0x030A - Invalid parameters (bad parameters sent during pairing/bonding process)
+    call system_endpoint_tx(system_endpoint_uart1, 16, "Bonding failed: ")
+    temp_buf(0:1) = ((failedresult >> 12) & $f) + 48 + ((failedresult >> 12) & $f)/10*7
+    temp_buf(1:1) = ((failedresult >> 8) & $f) + 48 + ((failedresult >> 8) & $f)/10*7
+    temp_buf(2:1) = ((failedresult >> 4) & $f) + 48 + ((failedresult >> 4) & $f)/10*7
+    temp_buf(3:1) = (failedresult & $f) + 48 + (failedresult & $f)/10*7
+    call system_endpoint_tx(system_endpoint_uart1, 4, temp_buf(0:4))
+    call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+    
+    # NOTE: the most common cases you need to take care of are:
+    # - 0x018B, which means you ran out of space and must remove at least one bond in order to bond again
+    # - 0x0206, which typically means the pairing info was removed on the remote device but not locally
+    # - 0x0301, which typically means the user cancelled the pairing request or entered the wrong passkey
+    # - 0x0305, which is like 0x0206 but is often generated instead if the remote device is a smartphone
+    # - 0x0308, which typically means the pairing info was removed on the local device but not remotely
+    if failedresult = $018b then
+        # only solved by removing bonds
+        call system_endpoint_tx(system_endpoint_uart1, 33, "Out of bonds, clear bonds first\r\n")
+    end if
+    if failedresult = $0301 then
+        # usually solved simply by trying again
+        call system_endpoint_tx(system_endpoint_uart1, 33, "Passkey/confirm issue, retry...\r\n")
+        call sm_encrypt_start(0, 1)
+    end if
+    if failedresult = $0305 || failedresult = $0206 then
+        # remove local bonding info first, then the remote device needs to reconnect
+        call system_endpoint_tx(system_endpoint_uart1, 39, "Local bond info issue, remove/disc...\r\n")
+        bond_count = bond_count - 1
+        call flash_ps_erase($8000 + handle)
+		if connection_info(9:1) != $ff then
+			call sm_delete_bonding(connection_info(9:1))
+		end if
+        call connection_disconnect(0)
+    end if
+    if failedresult = $0308 then
+        # remove remote bonding info first, then the remote device needs to reconnect
+        call system_endpoint_tx(system_endpoint_uart1, 38, "Remote bond info issue, remove first\r\n")
+        call connection_disconnect(0)
+    end if
+end

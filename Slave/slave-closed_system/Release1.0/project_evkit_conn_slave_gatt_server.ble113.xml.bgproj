@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<project>
+    <device type="ble113" memory="256"/>
+    <config in="evkit_conn_slave_gatt_server-config.xml" />
+    <gatt in="gatt.xml" />
+    <hardware in="evkit_hardware.xml" />
+    <script in="evkit_conn_slave_gatt_server.bgs" />
+    <image out="out_ble113.hex" />
+</project>

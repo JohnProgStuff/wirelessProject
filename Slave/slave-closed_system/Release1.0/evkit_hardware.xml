@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<hardware>
+    <sleeposc enable="true" ppm="30" /> <!-- enabled to access low power mode --> 
+    <usb enable="false" endpoint="none" /> <!-- disabled to save power, not using -->
+    <txpower power="15" bias="5" />
+	<script enable="true" />
+    <sleep enable="false" />
+    <usart channel="1" alternate="1" baud="9600" endpoint="none" flow="false"/>
+	<!--host_wakeup_pin enable="true" port="1" pin="1" state="up" /-->
+</hardware>
