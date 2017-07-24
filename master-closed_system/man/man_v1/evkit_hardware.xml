@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<hardware>
+     <sleeposc enable="false" ppm="30" /> <!-- enabled to access low power mode --> 
+    <usb enable="false" endpoint="none" /> <!-- disabled to save power, not using -->
+    <txpower power="15" bias="5" />
+    <script enable="true" />
+	<sleep enable="false"/> <!-- max_mode="2" will prevent deepest sleep -->
+	<!--wakeup_pin enable="true" port="0" pin="1" /-->
+	<!--slow_clock enable="true" /--> <!-- I think we can use this to save power if we don't need UART -->
+    <usart channel="1" alternate="1" baud="9600" endpoint="none" />
+	<!-- P0_0, P0_1, P1_6 will be used for interrupts. Port 2 interrupts are not supported. -->
+	<port pull="down" index="0" tristatemask="0" /> <!-- pull port 0 down -->
+	<port pull="down" index="1" tristatemask="0" /> <!-- pull port 1 down -->
+	<port pull="down" index="2" tristatemask="0" /> <!-- pull port 2 down -->
+	<!-- 12:55 added tristatemask="0"  to all 3 ports -->
+	<!-- 12:55 disable sleep enable and then enable slow_clock -->
+	<!--  -->
+	<!--  -->
+	
+	
+</hardware>

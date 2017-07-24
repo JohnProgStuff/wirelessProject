@@ -1,0 +1,731 @@
+dim addr(6)
+dim result
+dim endpoint
+dim in(20) # endpoint data in
+dim in_len
+dim out(20) # endpoint data out
+dim gotSaved(20)
+dim gotSaved_len
+dim out_len
+  dim connected 		# BLE connection status (0=disconnected, 1=connected)
+  dim advertising 		# advertising status (0=off, 1=on)
+  dim io_status(3)    	# port status characteristic local uint8array container 3 bytes stores 3 ports
+  dim ipr_result		# container for io_port_read() call's returned "result" value (uint16)
+  dim ipr_port			# container for io_port_read() call's returned "port" value (uint8)
+  dim ipr_data			# container for io_port_read() call's returned "port" value (uint8) (data? not port?)
+  dim last_press        # last time button was pressed.
+dim count
+dim gpio_delta
+dim gotup(5)
+dim gotdn(5)
+dim gotST(5)
+dim gotET(5)
+dim noTN(4)
+dim tuneMode
+dim direction(2) #UP or DN
+# variables used by the example script for Flash read/write
+dim read(16)
+dim data(16)
+dim length
+dim bond_count
+dim bond_enum_counter
+dim bonded
+
+# connection_info structure:
+# - 0: connected/encrypted/bonded flag (bits 0, 1, 2)
+# - 1: disconnection action flags (bit 0 = add to whitelist, bit 1 = resume unfiltered advertising)
+# - 2-7: current or last connected MAC address
+# - 8: current or last connected address type
+# - 9: current or last connected bond handle
+dim connection_info(10)
+
+dim ret_result
+dim ret_value_len
+dim ret_value_data(7)
+
+# temporary buffer used for storing and echoing hex data as ASCII
+dim temp_buf(4)
+
+dim tuneCount 			# default is 32-bit 4-byte signed integer. 
+# COUNTER POSSIBILITIES
+# max=127 with a 8 bit signed integer
+# max=32,767 with a 16bit signed integer bgscript has 32768 in soft timer 1s interrupt
+# max=2,147,483,647 with a 32bit signed integer
+#*********************************************************************************************
+#call sm_set_parameters(mitm, min_key_size, io_capabilities)
+#call sm_set_parameters(1, 8, 2)
+#************************************************************************************************************
+event system_boot(major, minor, patch, build, ll_version, protocol_version, hw)
+	# initialized connected status to disconnected
+	connected = 0
+
+	call sm_set_bondable_mode(1)# enable bondable mode
+	
+	 # initialize connection status to empty (not connected, etc.)
+	memset(connection_info(0), 0, 10)
+	connection_info(9:1) = $ff # bond data is 0xFF to indicate nothing
+    bond_enum_counter = 0
+	call system_endpoint_tx(system_endpoint_uart1, 20, "Current bond count: ")
+    call sm_get_bonds()(bond_count)
+    call system_endpoint_tx(system_endpoint_uart1, 1, bond_count + $30) # convert to ASCII (always 0-8)
+    call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+	
+	
+	gpio_delta = 0
+	io_status(0:1) = 0
+	io_status(1:1) = 0
+	io_status(2:1) = 0
+	count = 0
+	gotup(0:5) = "gotUP"
+	gotdn(0:5) = "gotDN"
+	gotST(0:5) = "gotST"
+	gotET(0:5) = "gotET"
+	noTN(0:4) = "noTN"
+	tuneMode = 0 #OFF=0
+	tuneCount = 0
+	endpoint = system_endpoint_uart1
+	################################################
+	# Data to write to flash
+	#data(0:11) === $ff ff 00 00 ff ff 00 00 ff ff 00
+	data(0:2) = "ET"
+	data(2:4) = "JOHN"
+	data(6:4) = "RUSS"
+	data(10:1) = $00
+	data(11:5) = "got--"
+	# Set all bits to 1 by erasing the first page (page is 2kB)
+	# call flash_erase_page(0)
+	# Read data from user area and print it
+	# read 11 bytes from offset 0
+	# Output will be all 0xff's
+	# Note: You can only write 1s to 0s on the flash. Flash erase command can be used to turn 0s to 1s.
+	#call flash_read_data(0, 11)(length, read(0:11))
+	#call system_endpoint_tx(endpoint, 11, read(0:11))
+	#call system_endpoint_tx(endpoint, 1, "\n")
+	# Offset 0, 11 bytes to write
+	# call flash_write_data(0, 11, data(0:11))
+	# Read data from user area
+	# read 11 bytes from offset 0
+	# Output will correspond to data(0:11)
+	# call flash_read_data(0, 11)(length, read(0:11))
+	# call system_endpoint_tx(endpoint, 11, read(0:11))
+	########################################################
+	
+	
+    call system_endpoint_tx(endpoint, 64, "\n\r** Boot: Connection Master, GATT Client ** Version: et-0.8 **\n")
+		# set gap_set_scan_parameters(scan_interval, scan_window, active)
+		#call gap_set_scan_parameters(1600, 800, 1)
+		#call gap_set_scan_parameters(75,50,1) #default
+		call gap_set_scan_parameters(75, 75, 1) # 93% duty cycle scanning
+		#call gap_set_scan_parameters(8000, 4000, 1) # default
+    # if paired already continue else run pair procedure to find a device
+	# if Pair button is pressed on bootup then it will clear the bondlist and look for new device.
+	#call hardware_io_port_read(0, $02)(ipr_result, ipr_port, ipr_data) #P0_1 pressed
+	#if (ipr_port = 0) then
+	#	call system_endpoint_tx(endpoint, 1, ipr_data + $30)		
+	#	call system_endpoint_tx(endpoint, 9, "\r\nPairBTN")
+	#end if
+	# call hardware_io_port_read(2, $ff)(ipr_result, ipr_port, ipr_data)
+	#io_status(2:1) = ipr_data
+	
+	call gap_discover(2) # look for device start scanning
+
+	#*****************************
+	call system_endpoint_tx(endpoint, 13, "\r\ncurrFlash: ")
+   	call flash_read_data(0, 16)(length, read(0:16))
+    call system_endpoint_tx(endpoint, 16, read(0:16))
+		direction(0:2) = read(0:2)
+		if direction(0:2) = "ST" then# Write data to user area
+			call gap_discover(2) # look for device
+			call system_endpoint_tx(endpoint, 10, "\r\nSTresend")
+			call hardware_set_soft_timer(32000,0,1) # resend until accepted. //32000 orginal
+			#call attclient_attribute_write(0, xgatt_data, 2, direction(0:2))
+		end if
+	#******************************
+	### ADD the ABOVE FOR THE ET SIGNAL AS WELL. so in case the master device resets the slave would get the command eventually.
+
+    call system_endpoint_set_watermarks(endpoint, 0, 0) # disable watermarks
+    
+		# enable INT on P0.0 & P0.1 parameters(port=0, bitmask=0b00000011, edge=rising=0)
+		call hardware_io_port_config_irq(1, $38, 0) # $0C is the bitmask for P1.2 P1.3 
+		call hardware_io_port_config_irq(0, $02, 0)
+		
+		call system_endpoint_tx(system_endpoint_uart1, 29, "\r\n** Boot Event Complete **\r\n")
+	
+	# now we use sm_bond_status events defined below to enumerate through all
+    # bonds and load the correct stored addresses from PS keys one at a time
+    #call gap_set_scan_parameters(scan_interval, scan_window, active)(result)
+    call gap_set_scan_parameters(1600, 800, 1)
+	# if we don't have any bonds yet, then assume we want to Scan with
+    # no filtering so that any ($e5) device can connect at will. But
+	# we will want to have a timeout in the future if no device is present
+    if bond_count = 0 then
+        # Scan without filters
+        call gap_discover(2)
+        call system_endpoint_tx(system_endpoint_uart1, 29, "Started UNFILTERED scanning\r\n")
+    end if
+	
+	call system_endpoint_set_watermarks(endpoint, $ff, 0) # disable TX watermark because we only receive
+end
+
+#************************************************************************************************************
+#any time it receives a response from a device it runs this event
+event gap_scan_response(rssi, packet_type, sender, address_type, bond, data_len, data_data)
+		#call system_endpoint_tx(system_endpoint_uart1, 18, "\r\n** Scanning **\r\n")
+   #if bonds exist & device bond handle=0 FILTERED  0 is first bond in whitelist
+	if bond_count > 0 then
+		if bond = 0 then 
+			#cal gap_connect_selective(conn_interval_min, conn_interval_max, timeout, latency)(result, connection_handle)
+			#call gap_connect_direct(address, addr_type, conn_interval_min, conn_interval_max, timeout, latency)(result, connection_handle)
+			call gap_connect_direct(sender(0:6), 0, 6, 6, 5000, 0) # 7.5ms connection interval meaning ~1.3KB/s //timeout = 500 original
+		end if
+	else 
+		#else no bonds exist so UNFILTERED scanning checks for any devices that match $e5
+		if packet_type = 4 && data_data(4:1) = $e5 then
+			#call gap_connect_direct(sender(0:6), 0, 800, 800, 500, 0) # 1000ms connection interval meaning 10B/s
+			#call gap_connect_direct(sender(0:6), 0, 80, 80, 500, 0) # 100ms connection interval meaning 100B/s
+			call gap_connect_direct(sender(0:6), 0, 6, 6, 5000, 0) # 7.5ms connection interval meaning ~1.3KB/s // timeout = 500 original
+		end if	
+	end if
+
+end
+
+event sm_bond_status(bond, keysize, mitm, keys)
+	if (connection_info(0:1) & $01) = 0 then
+        # not connected, so that means we're loading at boot - not necessarily anymore
+        # load 6-byte address and 1-byte address_type from PS key
+        call flash_ps_load($8000 + bond)(ret_result, ret_value_len, ret_value_data(0:ret_value_len))
+        call system_endpoint_tx(system_endpoint_uart1, 29, "Loaded MAC/type from PS key\r\n")
+		#maxBonds = 1
+
+        # add to whitelist
+        call system_whitelist_append(ret_value_data(0:6), ret_value_data(6:1))
+        call system_endpoint_tx(system_endpoint_uart1, 26, "Added stored MAC for bond ")
+        call system_endpoint_tx(system_endpoint_uart1, 1, $30 + bond)
+        call system_endpoint_tx(system_endpoint_uart1, 15, " to whitelist\r\n")
+        
+        # increment bond enumeration count and check for completion
+        bond_enum_counter = bond_enum_counter + 1
+        if bond_enum_counter >= bond_count then
+            # start advertising filter whitelist filtering
+            call gap_end_procedure()
+			call gap_discover(2)
+            call system_endpoint_tx(system_endpoint_uart1, 30, "Started FILTERED scanning\r\n")
+        end if
+    else
+        # already connected, so that means we just bonded
+
+        # update connection status (bonded = true)
+        connection_info(0:1) = connection_info(0:1) | 4
+		connection_info(9:1) = bond
+
+        # increment local bond count
+        bond_count = bond_count + 1
+
+        call system_endpoint_tx(system_endpoint_uart1, 20, "Current bond count: ")
+        call system_endpoint_tx(system_endpoint_uart1, 1, bond_count + $30) # convert to ASCII (always 0-8)
+        call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+
+        # set "add-to-whitelist" disconnection action
+        connection_info(1:1) = connection_info(1:1) | 1
+        call system_endpoint_tx(system_endpoint_uart1, 29, "Set 'add-to-whitelist' flag\r\n")
+
+        # store address+type in correct PS key slot
+        call flash_ps_save($8000 + bond, 7, connection_info(2:7))
+        call system_endpoint_tx(system_endpoint_uart1, 29, "Stored MAC/type into PS key\r\n")
+    end if
+end
+
+event sm_bonding_fail(handle, failedresult)
+    # if bonding fails, handle it gracefully based on the following possible results:
+    # - 0x018B - Out of bonds (no space left, all 8 bonding slots taken)
+    # - 0x0205 - Authentication failure (shouldn't happen with "just works" mode, but might otherwise)
+    # - 0x0206 - Pin or key missing (probably local or remote device is missing the key, but not both)
+    # - 0x0301 - Passkey entry failed (also shouldn't happen in "just works" mode unless bonding is cancelled)
+    # - 0x0302 - OOB data not available (only occurs if OOB is required and not supported on both ends)
+    # - 0x0303 - Authentication requirements (I/O capabilities required but not supported)
+    # - 0x0304 - Confirm value failed (PIN entry/comparison attempted but failed)
+    # - 0x0305 - Pairing not supported (also occurs if bond info removed from remote device but not local module)
+    # - 0x0306 - Encryption key size (key size insufficient to meet security requirements)
+    # - 0x0307 - Command not supported (SMP command is not supported on this device)
+    # - 0x0308 - Unspecified reason (may occur if bond info is present remotely but not locally)
+    # - 0x0309 - Repeated attempts (too little time has elapsed since last pairing/security request)
+    # - 0x030A - Invalid parameters (bad parameters sent during pairing/bonding process)
+    call system_endpoint_tx(system_endpoint_uart1, 16, "Bonding failed: ")
+    temp_buf(0:1) = ((failedresult >> 12) & $f) + 48 + ((failedresult >> 12) & $f)/10*7
+    temp_buf(1:1) = ((failedresult >> 8) & $f) + 48 + ((failedresult >> 8) & $f)/10*7
+    temp_buf(2:1) = ((failedresult >> 4) & $f) + 48 + ((failedresult >> 4) & $f)/10*7
+    temp_buf(3:1) = (failedresult & $f) + 48 + (failedresult & $f)/10*7
+    call system_endpoint_tx(system_endpoint_uart1, 4, temp_buf(0:4))
+    call system_endpoint_tx(system_endpoint_uart1, 2, "\r\n")
+    
+    # NOTE: the most common cases you need to take care of are:
+    # - 0x018B, which means you ran out of space and must remove at least one bond in order to bond again
+    # - 0x0206, which typically means the pairing info was removed on the remote device but not locally
+    # - 0x0301, which typically means the user cancelled the pairing request or entered the wrong passkey
+    # - 0x0305, which is like 0x0206 but is often generated instead if the remote device is a smartphone
+    # - 0x0308, which typically means the pairing info was removed on the local device but not remotely
+    if failedresult = $018b then
+        # only solved by removing bonds
+        call system_endpoint_tx(system_endpoint_uart1, 33, "Out of bonds, clear bonds first\r\n")
+    end if
+    if failedresult = $0301 then
+        # usually solved simply by trying again
+        call system_endpoint_tx(system_endpoint_uart1, 33, "Passkey/confirm issue, retry...\r\n")
+        call sm_encrypt_start(0, 1)  # try again
+    end if
+    if failedresult = $0305 || failedresult = $0206 then
+        # remove local bonding info first, then the remote device needs to reconnect
+        call system_endpoint_tx(system_endpoint_uart1, 39, "Local bond info issue, remove/disc...\r\n")
+        bond_count = bond_count - 1
+        call flash_ps_erase($8000 + handle)
+		if connection_info(9:1) != $ff then
+			call sm_delete_bonding(connection_info(9:1))
+		end if
+        call connection_disconnect(0)
+    end if
+    if failedresult = $0308 then
+        # remove remote bonding info first, then the remote device needs to reconnect
+        call system_endpoint_tx(system_endpoint_uart1, 38, "Remote bond info issue, remove first\r\n")
+        call connection_disconnect(0)
+    end if
+end
+
+
+#************************************************************************************************************
+# connection_info(0:1) -> connected true=1 false=0
+# connection_info(1:1) -> disconnection event actions use this flag 
+# connection_info(2:6) -> remote device BT address is 6 bytes
+# connection_info(8:1) -> address_type
+# connection_info(9:1) -> bonding $ff-none anything else is its 8 bit bonding info
+event connection_status(connection, flags, address, address_type, conn_interval, timeout, latency, bonding)
+	#check for "new connection established" event
+	if (flags & $05) = $05 then	
+		connected = 1 # set connection status to Connected
+		call system_endpoint_tx(endpoint, 15, "\n\r Connected \r\n")
+		# display current bond status
+        if bonding < $ff then
+            call system_endpoint_tx(system_endpoint_uart1, 17, "(already bonded, ")
+            call system_endpoint_tx(system_endpoint_uart1, 1, bonding + $30)
+            call system_endpoint_tx(system_endpoint_uart1, 3, ")\r\n")
+        else
+            call system_endpoint_tx(system_endpoint_uart1, 14, "(not bonded)\r\n")
+        end if
+        
+        # update connection info (connected = true)
+        connection_info(0:1) = connection_info(0:1) | 1
+
+        # clear "disconnection actions" flag so we don't re-use old settings
+        connection_info(1:1) = 0
+
+        # copy address information into placeholders
+        memcpy(connection_info(2), address(0), 6)
+        connection_info(8:1) = address_type
+
+	end if
+	#check for "encrypted" status (connected+bonded, not used by this IRQ demo)
+	if (flags & $02) = $02 then
+		call system_endpoint_tx(endpoint, 15, "\n\r Encrypted \r\n")
+		# display current bond status
+        if bonding < $ff then
+            call system_endpoint_tx(system_endpoint_uart1, 17, "(already bonded, ")
+            call system_endpoint_tx(system_endpoint_uart1, 1, bonding + $30)
+            call system_endpoint_tx(system_endpoint_uart1, 3, ")\r\n")
+        else
+            call system_endpoint_tx(system_endpoint_uart1, 14, "(not bonded)\r\n")
+        end if
+
+        # update connection info (encrypted = true)
+        connection_info(0:1) = connection_info(0:1) | 2
+
+        # cancel the pending one-shot encryption timer, if running
+        call hardware_set_soft_timer(0, 2, 1)
+	else
+		# request encryption if not encrypted already
+        if bonding = $ff then
+            # not bonded or encrypted, so request both
+            call system_endpoint_tx(system_endpoint_uart1, 26, "Requesting encryption...\r\n")
+            call sm_encrypt_start(connection, 1)
+        else
+            # update connection info (bonded = true)
+            connection_info(0:1) = connection_info(0:1) | 4
+            
+            # start one-shot encryption attempt timer in case the remote side
+            # doesn't attempt an encrypted link within 1 second (this might
+            # happen if you bond with a smartphone and then remove the pairing
+            # info from the phone side, but not the local module side)
+            call hardware_set_soft_timer(32768, 2, 1)
+        end if
+	end if  
+    # copy bond flag to status buffer
+	connection_info(9:1) = bonding
+	
+	#call system_endpoint_tx(endpoint, 17, "\n\r++ Connected ++")
+    #call system_endpoint_tx(endpoint, 26, "\n\r++ Connection interval: ")	
+    #call system_endpoint_tx(endpoint, 4, conn_interval)
+    #call system_endpoint_tx(endpoint, 4, " ++\n")
+	
+    call system_endpoint_set_watermarks(endpoint, 1, 0) # set RX watermark
+    #call attclient_attribute_write(connection, atthandle, data_len, data_data)(connection, result)
+    call attclient_attribute_write(connection, xgatt_data + 1, 1, 2) #xgatt_data+1 
+	#xgatt_data+1 will be responded to from slave and attclient_procedure event runs and if it was
+end
+
+#************************************************************************************************************
+# this event runs when the slave device responds to a master att command
+#************************************************************************************************************
+event attclient_procedure_completed(connection, results, handle)
+        # call system_endpoint_tx(endpoint, 33, "\n\r attc_proc_complete \n\r")
+    if (handle = xgatt_data + 1) then # it was xgatt_data + 1 
+       #call system_endpoint_tx(endpoint, 43, "\n\r++ Remote CCC set to start indications ++")
+       call system_endpoint_tx(endpoint, 46, "\n\r++ Transparent data exchange can start ++\n\n\r")
+    end if
+    if (handle = xgatt_data) then
+		call system_endpoint_tx(endpoint,9,"\r\nxgatt: ")
+        call system_endpoint_set_watermarks(endpoint, 1, $ff) # set RX watermark
+    end if
+end
+
+#************************************************************************************************************
+# attclient_attribute_value
+#************************************************************************************************************
+event attclient_attribute_value(connection, handle, type, value_len, value_data)
+      # call system_endpoint_tx(endpoint, 26, "\n\r attclient_att_value \n\n\r") #for debugging
+	  # connection for just one connection will be zero.
+	#call system_endpoint_tx(endpoint, 4, "\nd: ")
+	#call system_endpoint_tx(endpoint, value_len, value_data(0:value_len))
+	#call system_endpoint_tx(endpoint, 1, "\n")
+    if handle = xgatt_data then # this if is just passing the xgatt_data to the UART. we want to wait for a received confirmation
+        out(0:value_len) = value_data(0:value_len) #value_len
+        out_len = value_len
+		gotSaved(0:value_len) = value_data(0:value_len) #value_len
+        gotSaved_len = value_len
+		data(10:5) = gotSaved(0:5)
+		call flash_erase_page(0)
+		call flash_write_data(0, 16, data(0:16))
+        call system_endpoint_set_watermarks(endpoint, $ff, out_len) # set TX watermark
+		#if out_len > 5 then
+		#	call connection_disconnect(0)
+		#	call gap_end_procedure() #this will end the discover process when master has received a confirmation.
+		#end if
+		#call system_endpoint_tx(endpoint, 1, "\n")
+		call hardware_set_soft_timer(0, 0, 0) # time=0 ends timer
+		#disabling timeout timer####call hardware_set_soft_timer(32000, 1, 1) # time=0 ends timer
+	    #call gap_end_procedure() #this will end the discover process
+		########call connection_disconnect()
+		
+    end if
+		# we want to disconnect if the server sends back any of the following "gotUP, gotDN, noTN"
+		# MCU will stay awake if it is in tune mode and could just get a TNup or TNdn back
+		# noTN or noTune stands for exit Tune mode. This will allow MCU to sleep and continue as normal.
+		#if value_data(0:value_len) = "gotup"
+		#	call connection_disconnect(0)
+		#	call gap_end_procedure() #this will end the discover process when master has received a confirmation.
+		#end if	
+		#if value_data = "gotdn"
+		#	call connection_disconnect(0)
+		#	call gap_end_procedure() #this will end the discover process when master has received a confirmation.
+		#end if	
+		#if value_data = "noTN" # end the tuning mode.
+		#	call connection_disconnect(0)
+		#	call gap_end_procedure() #this will end the discover process when master has received a confirmation.
+		#end if	
+end
+
+
+ #dim MAX_CHECKS
+ #dim Debounced_state
+ #dim State#(4) # make state array the depth of MAX_CHECKS
+ #dim Index #pointer into State 
+#************************************************************************************************************
+# timer interrupt routine
+#************************************************************************************************************
+event hardware_soft_timer(handle)
+	#call_hardware_io_port_read(port, mask)(result, port, data)
+	#if handle = 1 then its button 1
+	#end if
+	#MAX_CHECKS = 8
+	# handle 0 = UP
+	# handle 1 = DN
+	# handle 2 = Tune
+	if handle = 0 then #resend the shift command until it is received.
+		if 1 then
+			call system_endpoint_tx(endpoint, 8, "\r\nsend: ")   
+			call system_endpoint_tx(endpoint, 2, direction(0:2))   
+			call attclient_attribute_write(0, xgatt_data, 2, direction(0:2))
+			####call hardware_set_soft_timer(20000, 0, 1) comment out to only send the command once
+		end if
+	end if
+	if handle = 1 then # keep awake timeout timer.
+		if tuneMode = 1 then
+			count = 0
+			if tuneCount > 59 then #tuneMode has timed out. End it.
+				tuneCount = 0
+				call hardware_set_soft_timer(0, 1, 1) #end timer for handle 1
+				tuneMode = 0
+				direction(0:2) = "ET"
+				data(0:2) = "ET"
+					call system_endpoint_tx(endpoint, 16, "\r\nsendET")   # out_len
+					call flash_erase_page(0)
+					call flash_write_data(0, 16, data(0:16))
+				call hardware_set_soft_timer(10000, 0, 1) #end timer for handle 1
+			else
+				tuneCount = tuneCount + 1
+				call system_endpoint_tx(endpoint, 13, "\r\ntuneCount+1")
+			    call hardware_set_soft_timer(32767, 1, 1) #end timer for handle 1
+			end if
+		else #tuneMode is off
+			if count > 500 then
+				count = 0
+				call hardware_set_soft_timer(0, 1, 1) #end timer for handle 1
+				call system_endpoint_tx(endpoint, 16, "\r\ncallDisconnect")   # out_len
+			    #call connection_disconnect(0)
+			else
+				count = count + 1
+			    call system_endpoint_tx(endpoint, 9, "\r\ncount+1")
+			    call hardware_set_soft_timer(32767, 1, 1) #end timer for handle 1
+			end if
+		end if
+        #----------------------------------------------------------
+		# if count > 9  then # 30 seconds
+			# count = 0
+			# call hardware_set_soft_timer(0, 1, 1) #end timer for handle 1
+			# if tuneMode = 1 then
+				# #tuneMode = 0
+				# #direction(0:2) = "ET"
+				# #data(0:2) = "ET"
+				# #	call system_endpoint_tx(endpoint, 16, "\r\nsendET")   # out_len
+				# #	call flash_erase_page(0)
+				# #	call flash_write_data(0, 11, data(0:11))
+				# call hardware_set_soft_timer(10000, 2, 1) #end timer for handle 1
+			# else
+				# call system_endpoint_tx(endpoint, 16, "\r\ncallDisconnect")   # out_len
+			    # call connection_disconnect(0)
+			# end if
+
+		# else
+			# call system_endpoint_tx(endpoint, 9, "\r\ncount+1")
+			# count = count + 1
+			# tuneCount = tuneCount + 1
+			# call hardware_set_soft_timer(32000, 1, 1) #end timer for handle 1
+		# end if
+	end if
+	if handle = 2 then
+		call system_endpoint_tx(system_endpoint_uart1, 26, "Requesting encryption...\r\n")
+
+        # other side hasn't tried an encrypted link yet even though we are
+        # bonded as far as we know anyway, so try to start it from this end
+        # ("connection" value here is always 0 since we are a peripheral,
+        # and peripherals only support a single connection at a time)
+        call sm_encrypt_start(0, 1)
+	end if
+	
+end
+
+dim saved1
+dim k
+dim down
+
+#************************************************************************************************************
+# hardware io port status
+#************************************************************************************************************
+event hardware_io_port_status(timestamp, port, irq, state)
+	# THINK ABOUT MAKING THE following if connected=0 A WHILE LOOP INSTEAD. THIS WAY IT MIGHT STAY 
+	# THERE UNTIL THE GAP DISCOVER PROCEDURE COMES BACK AND IT CONNECTS. HOWEVER THIS MIGHT 
+	# SCREW THINGS UP.
+	if connected = 0 then
+		call gap_discover(2) # look for device
+		call system_endpoint_tx(system_endpoint_uart1, 10, "\r\nScanning")
+	end if
+	#call system_endpoint_tx(system_endpoint_uart1, 8, "\n Int \r\n")
+	#call system_endpoint_tx(system_endpoint_uart1, 10, delta) # try to print the time stamp of the timer
+	#call hardware_set_soft_timer(time, handle, single_shot)(result)
+	#call hardware_set_soft_timer(0,0,1)
+	#call hardware_set_soft_timer(0,1,1)
+	#call hardware_set_soft_timer(0,0,0) # MIGHT NOT NEED
+	#call hardware_set_soft_timer(0,1,0) # MIGHT NOT NEED
+	#CHECK PAIR BUTTON P0_1
+	if port = 0 && irq = $02 then  
+        # P0_1 button pressed
+        call system_endpoint_tx(system_endpoint_uart1, 6, "P0_1\r\n")
+        # stop advertising if we are already
+        #call gap_set_mode(0, 0)
+
+        # indiscriminately remove all possible bonds
+        call sm_delete_bonding($ff)
+        
+        # clear whitelist
+        call system_whitelist_clear()
+        call system_endpoint_tx(system_endpoint_uart1, 29, "All bonds/whitelist cleared\r\n")
+        
+        # reset bond count
+        bond_count = 0
+
+        # start/resume advertising as necessary
+        if (connection_info(0:1) & $01) = 0 then
+            # not currently connected, so do this immediately here
+            call gap_end_procedure()
+			call gap_discover(2)
+            call system_endpoint_tx(system_endpoint_uart1, 32, "Started UNFILTERED scanning1\r\n")
+        else
+            # disconnect, which will trigger "connection_disconnected" event and do the above automatically
+            call connection_disconnect(0)
+        end if
+    end if
+
+	
+	
+	# only accept this press if it's more then 100ms after the last one (32768 = 1 sec)
+    if (timestamp - gpio_delta) > 10277 then #was 3277
+	#if(timestamp - gpio_delta) >= 5000 || (gpio_delta < gpio_delta && ($7FFFFFFF - gpio_delta + timestamp) > 5000) then
+		gpio_delta = timestamp
+		#count = count + 1
+		saved1 = 0
+		#call hardware_set_soft_timer(1000, 0, 1)
+		if port = 1 then
+			if (irq & $08) = $08 then # & down = 0 then	
+				direction(0:2) = "UP"
+				#P1_2 is HIGH and the source of this interrupt
+				call system_endpoint_tx(system_endpoint_uart1, 7, "\r\nP1_3 ")
+				call attclient_attribute_write(0, xgatt_data, 2, "UP")
+				#call hardware_set_soft_timer(time, handle, single_shot)(result)
+				call hardware_set_soft_timer(15000, 0, ) # single_shot runs 0-repeating, 1 -once
+			#	down = 1
+			#else
+			#	down = 0
+			end if
+			if (irq & $10) = $10 then #& down = 0 then	
+				#P1_3 is HIGH and the source of this interrupt
+				direction(0:2) = "DN"
+				call system_endpoint_tx(system_endpoint_uart1, 8, "\r\nP1__4 ")
+				call attclient_attribute_write(0, xgatt_data, 2, "DN")
+				call hardware_set_soft_timer(15000, 0, 0) # single_shot runs 0-repeating, 1 -once
+				#down = 1
+			#else
+			#	down = 0
+			end if
+			if (irq & $20) = $20 then
+				call system_endpoint_tx(endpoint, 13, "\r\ncurrFlash: ")
+				call flash_read_data(0, 11)(length, read(0:11))
+				call system_endpoint_tx(endpoint, 2, read(0:2))
+				if read(0:2) = "ST" then
+					tuneMode = 1
+					
+				end if
+				if (tuneMode = 1) then #if tuneMode is on then End Tune else Start Tune
+					direction(0:2) = "ET"   #Start Tune
+					tuneMode = 0
+					data(0:2) = "ET"
+					call flash_erase_page(0)
+					call flash_write_data(0, 11, data(0:11))
+				else
+					direction(0:2) = "ST"   #Start Tune
+					tuneMode = 1
+					data(0:2) = "ST"
+					call flash_erase_page(0)
+					call flash_write_data(0, 11, data(0:11))
+				end if
+				call system_endpoint_tx(endpoint, 12, "\r\nNewFlash: ")
+				call flash_read_data(0, 11)(length, read(0:11))
+				call system_endpoint_tx(endpoint, 2, read(0:2))
+				
+			    call system_endpoint_tx(system_endpoint_uart1, 8, "\r\nP1__5 ")
+				call attclient_attribute_write(0, xgatt_data, 2, direction(0:2))
+				#call attclient_attribute_write(0, xgatt_data, 2, "ST") #start Tune
+				call hardware_set_soft_timer(20000, 0, 0) # single_shot runs 0-repeating, 1 -once
+				
+			end if
+			
+			#call hardware_io_port_read(1, $04)(ipr_result, ipr_port, ipr_data)
+			#call hardware_io_port_read(2, $ff)(ipr_result, ipr_port, ipr_data)
+			#io_status(2:1) = ipr_data
+		
+		end if
+	end if	
+	### I thought I needed a disconnect call here. before the interrupt ends so device will go to sleep ###############
+	### having the disconnect and end procedure lines below doesn't allow the device time to connect. #####
+	#call connection_disconnect(0)
+	#call gap_end_procedure() #this will end the discover process
+end
+	
+#************************************************************************************************************
+# when the system receives something over the UART RX it will flag the RX watermark and this event will run
+#      this event passes
+event system_endpoint_watermark_rx(curr_endpoint, size)
+        in_len = size
+        if in_len > 20 then
+            in_len = 20
+        end if
+			# enable the following line only if mcu isn't echoing back as well.
+			call system_endpoint_tx(endpoint, in_len, in(0:in_len)) # echo back to terminal for debugging
+		call system_endpoint_set_watermarks(endpoint, 0, $ff) # disable RX watermark 'clear the RX flag'
+		call system_endpoint_rx(endpoint, in_len)(result, in_len, in(0:in_len))
+		# att write(connection, atthandle, data_len, data_data)
+        call attclient_attribute_write(0, xgatt_data, in_len, in(0:in_len)) # send the uart data through BLE
+end
+
+#************************************************************************************************************
+event system_endpoint_watermark_tx(curr_endpoint, size)
+    if curr_endpoint = endpoint then
+        call system_endpoint_set_watermarks(endpoint, $ff, 0) # disable TX watermark
+        call system_endpoint_tx(endpoint, out_len, out(0:out_len))#out_len
+		#call system_endpoint_tx(endpoint, 2, out_len)
+		#call system_endpoint_tx(endpoint, 5, gotup(0:5))
+		
+		#if out(0:out_len) = gotup(0:out_len)
+		#	call connection_disconnect(0)
+		#	call gap_end_procedure() #this will end the discover process when master has received a confirmation.
+		#end if
+		call attclient_indicate_confirm(0) #confirm receipt of data after it is sent to UART
+    end if
+end
+
+#************************************************************************************************************
+event connection_disconnected(conn, reas)
+		connected = 0 #set connection status to disconnected
+		call system_endpoint_tx(endpoint, 9, "\r\nFlash: ")
+    	call flash_read_data(0, 11)(length, read(0:11))
+        call system_endpoint_tx(endpoint, 2, read(0:2))
+    call system_endpoint_tx(endpoint, 22, "\n\r-- Disconnected --\n")
+		call system_endpoint_tx(endpoint, 9, "\r\nFlash: ")
+    	call flash_read_data(0, 11)(length, read(0:11))
+        call system_endpoint_tx(endpoint, 2, read(0:2))
+    call system_endpoint_tx(endpoint, 17, "\r-- Reason code: ")
+    call system_endpoint_tx(endpoint, 2, reas)
+    call system_endpoint_tx(endpoint, 4, " --\n")
+	
+	
+	
+
+    call system_endpoint_set_watermarks(endpoint, 0, 0) # disable watermarks
+    #call gap_set_scan_parameters(scan_interval, scan_window, active)(result)
+    #call gap_set_scan_parameters(1600, 800, 1)
+    #call gap_discover(2)
+    call gap_end_procedure() #this will end the discover process
+	
+	
+	if (connection_info(1:1) & $01) > 0 then #disconnect action flag=1 resume unfiltered advertising
+        # add to whitelist
+        call system_whitelist_append(connection_info(2:6), connection_info(8:1))
+        call system_endpoint_tx(system_endpoint_uart1, 29, "Added last MAC to whitelist\r\n")
+    end if
+
+    # restart advertising appropriately 33based on bond count and "connection" flag
+    if bond_count > 0 && (connection_info(1:1) & $02) = 0 then
+        #call gap_end_procedure()#stop scanning
+        ######call gap_discover(2)
+		call system_endpoint_tx(system_endpoint_uart1, 27, "Started FILTERED scanning\r\n")
+    else
+        # use unfiltered if there are no bonds OR if "connection" = 2
+        # (connection flag set specially in GPIO interrupt handler)
+        #call gap_end_procedure()#stop scanning
+        ###########call gap_discover(2)
+        call system_endpoint_tx(system_endpoint_uart1, 29, "Started UNFILTERED scanning\r\n")
+    end if
+
+    # clear connected/encrypted/bonded status
+    connection_info(0:1) = 0
+	
+	#call sm_get_bonds()(bond_count)
+	
+
+end

@@ -1,0 +1,2 @@
+xgatt_data 6
+c_timesync_reference 11
