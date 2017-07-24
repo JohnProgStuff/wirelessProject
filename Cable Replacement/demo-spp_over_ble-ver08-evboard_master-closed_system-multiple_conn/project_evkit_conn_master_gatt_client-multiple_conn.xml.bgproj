@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<project>
+    <config in="evkit_conn_master_gatt_client_multiple_conn-config.xml" />
+    <gatt in="gatt.xml" />
+    <hardware in="evkit_hardware.xml" />
+    <script in="evkit_conn_master_gatt_client_multiple_conn.bgs" />
+    <image out="out.hex" />
+    <device type="ble113"  memory="256"/>
+</project>

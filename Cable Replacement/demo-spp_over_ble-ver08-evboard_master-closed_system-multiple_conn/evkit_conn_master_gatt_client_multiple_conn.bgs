@@ -1,0 +1,115 @@
+dim addr(6)
+dim result
+dim endpoint
+dim in(20) # endpoint data in
+dim in_len
+dim out(20) # endpoint data out
+dim out_len
+dim which_conn
+
+event system_boot(major, minor, patch, build, ll_version, protocol_version, hw)
+    
+    endpoint = system_endpoint_uart1
+    
+    call system_endpoint_tx(endpoint, 64, "\n\r** Boot: Connection Master, GATT Client ** Version: et-0.8 **\n")
+
+    call system_endpoint_set_watermarks(endpoint, 0, 0) # disable watermarks
+    
+    call gap_set_scan_parameters(1600, 800, 1)
+    call gap_discover(2)
+    
+end
+
+event gap_scan_response(rssi, packet_type, sender, address_type, bond, data_len, data_data)
+
+    if packet_type = 4 && data_data(4:1) = $e5 then
+       #call gap_connect_direct(sender(0:6), 0, 800, 800, 500, 0) # 1000ms connection interval meaning max 10B/s
+       #call gap_connect_direct(sender(0:6), 0, 80, 80, 500, 0) # 100ms connection interval meaning max 100B/s
+       call gap_connect_direct(sender(0:6), 0, 8, 8, 500, 0) # 10ms connection interval meaning max 1000B/s
+    end if
+
+end
+
+event connection_status(connection, flags, address, address_type, conn_interval, timeout, latency, bonding)
+    
+    call system_endpoint_tx(endpoint, 17, "\n\r++ Connected ++")
+    call system_endpoint_tx(endpoint, 20, "\n\r++ Connection ID: ")
+    call system_endpoint_tx(endpoint, 1, connection + 48)
+    call system_endpoint_tx(endpoint, 4, " ++\n")
+    call system_endpoint_tx(endpoint, 26, "\n\r++ Connection interval: ")
+    call system_endpoint_tx(endpoint, 4, conn_interval)
+    call system_endpoint_tx(endpoint, 4, " ++\n")
+
+    call attclient_attribute_write(connection, xgatt_data + 2, 1, 2)
+    
+    if connection = 0
+       call system_endpoint_set_watermarks(endpoint, 1, 0) # set RX watermark
+       call gap_discover(2)
+    end if    
+    
+end
+
+event system_endpoint_watermark_rx(curr_endpoint, size)
+
+        in_len = size
+        if in_len > 20 then
+            in_len = 20
+        end if
+        call system_endpoint_set_watermarks(endpoint, 0, $ff) # disable RX watermark
+        call system_endpoint_rx(endpoint, in_len)(result, in_len, in(0:in_len))
+        call attclient_attribute_write(0, xgatt_data, in_len, in(0:in_len))
+    
+end
+
+event attclient_procedure_completed(connection, results, handle)
+
+    if (handle = xgatt_data + 2) then
+       call system_endpoint_tx(endpoint, 43, "\n\r++ Remote CCC set to start indications ++")
+       call system_endpoint_tx(endpoint, 46, "\n\r++ Transparent data exchange can start ++\n\n\r")
+    end if
+
+    if (handle = xgatt_data) then
+        call system_endpoint_set_watermarks(endpoint, 1, $ff) # set RX watermark
+    end if
+    
+end
+
+event attclient_attribute_value(connection, handle, type, value_len, value_data)
+
+    if handle = xgatt_data then
+        which_conn = connection
+        out_len = value_len
+        out(0:out_len) = value_data(0:value_len)
+        call system_endpoint_set_watermarks(endpoint, $ff, out_len + 10) # set TX watermark
+    end if
+    
+end
+
+event system_endpoint_watermark_tx(curr_endpoint, size)
+
+    if curr_endpoint = endpoint then
+        call system_endpoint_set_watermarks(endpoint, $ff, 0) # disable TX watermark
+        call system_endpoint_tx(endpoint, 7, "\n\rConn ")
+        call system_endpoint_tx(endpoint, 1, which_conn + 48)
+        call system_endpoint_tx(endpoint, 2, ": ")
+        call system_endpoint_tx(endpoint, out_len, out(0:out_len))
+        call attclient_indicate_confirm(which_conn)
+    end if
+    
+end
+
+event connection_disconnected(connection, reason)
+    
+    call system_endpoint_tx(endpoint, 22, "\n\n\r-- Disconnected --\n")
+    call system_endpoint_tx(endpoint, 20, "\n\r++ Connection ID: ")
+    call system_endpoint_tx(endpoint, 1, connection + 48)
+    call system_endpoint_tx(endpoint, 4, " ++\n")
+    call system_endpoint_tx(endpoint, 17, "\r-- Reason code: ")
+    call system_endpoint_tx(endpoint, 2, reason)
+    call system_endpoint_tx(endpoint, 4, " --\n")
+
+    #call system_endpoint_set_watermarks(endpoint, 0, 0) # disable watermarks
+    
+    call gap_discover(2)
+    
+end
