@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<hardware>
+    <sleeposc enable="true" ppm="30" /> <!-- enabled to access low power mode --> 
+    <usb enable="false" /> <!-- disabled to save power, not using -->
+    <sleep enable="true" max_mode="2"/> <!-- max_mode="2" will prevent deepest sleep -->
+	<wakeup_pin enable="true" port="1" pin="1" />
+    <txpower power="15" bias="5" />
+    <script enable="true" />
+    <usart channel="1" alternate="1" baud="9600" endpoint="none" />
+	<!-- P0_0, P0_1, P1_6 will be used for interrupts. Port 2 interrupts are not supported. -->
+	<port pull="down" index="0"/> <!-- pull port 0 down -->
+	<port pull="down" index="1"/> <!-- pull port 1 down -->
+	<port pull="down" index="2"/> <!-- pull port 2 down -->
+</hardware>

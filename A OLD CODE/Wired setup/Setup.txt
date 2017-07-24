@@ -1,0 +1,4 @@
+This folder has the working code to transfer from one Arduino UNO
+to the other through BLE113 modules. 
+The BLE113 master firmware also has the ability to get 2 button inputs
+using the BGScript.

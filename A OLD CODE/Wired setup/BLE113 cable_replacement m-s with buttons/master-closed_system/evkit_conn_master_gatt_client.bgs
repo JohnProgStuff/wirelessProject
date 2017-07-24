@@ -1,0 +1,198 @@
+dim addr(6)
+dim result
+dim endpoint
+dim in(20) # endpoint data in
+dim in_len
+dim out(20) # endpoint data out
+dim out_len
+  dim connected 		# BLE connection status (0=disconnected, 1=connected)
+  dim advertising 		# advertising status (0=off, 1=on)
+  dim io_status(3)    	# port status characteristic local uint8array container 3 bytes stores 3 ports
+  dim ipr_result		# container for io_port_read() call's returned "result" value (uint16)
+  dim ipr_port			# container for io_port_read() call's returned "port" value (uint8)
+  dim ipr_data			# container for io_port_read() call's returned "port" value (uint8) (data? not port?)
+  dim last_press        # last time button was pressed.
+
+event system_boot(major, minor, patch, build, ll_version, protocol_version, hw)
+		# initialized connected status to disconnected
+		connected = 0
+		# initialize advertising status as ON (since it will be turned on in slave mode)
+		# advertising = 1
+		
+	endpoint = system_endpoint_uart1
+    
+    call system_endpoint_tx(endpoint, 64, "\n\r** Boot: Connection Master, GATT Client ** Version: et-0.8 **\n")
+
+    call system_endpoint_set_watermarks(endpoint, 0, 0) # disable watermarks
+    
+    call gap_set_scan_parameters(1600, 800, 1)
+    call gap_discover(2)
+		# enable INT on P0.0 & P0.1 parameters(port=0, bitmask=0b00000011, edge=rising=0)
+		call hardware_io_port_config_irq(1, $0C, 0)
+		call system_endpoint_tx(system_endpoint_uart1, 29, "\r\n** Boot Event Complete **\r\n")
+    
+end
+
+event gap_scan_response(rssi, packet_type, sender, address_type, bond, data_len, data_data)
+
+    if packet_type = 4 && data_data(4:1) = $e5 then
+       #call gap_connect_direct(sender(0:6), 0, 800, 800, 500, 0) # 1000ms connection interval meaning 10B/s
+       #call gap_connect_direct(sender(0:6), 0, 80, 80, 500, 0) # 100ms connection interval meaning 100B/s
+       call gap_connect_direct(sender(0:6), 0, 6, 6, 500, 0) # 7.5ms connection interval meaning ~1.3KB/s
+    end if
+
+end
+
+event connection_status(connection, flags, address, address_type, conn_interval, timeout, latency, bonding)
+		#check for "new connection established" event
+		if (flags & $05) = $05 then	
+			connected = 1 # set connection status to Connected
+			call system_endpoint_tx(endpoint, 17, "\n\r Connected=1 \r\n")
+		end if
+		#check for "encrypted" status (connected+bonded, not used by this IRQ demo)
+		if (flags & $02) = $02 then
+			call system_endpoint_tx(endpoint, 15, "\n\r Encrypted \r\n")
+		end if
+    call system_endpoint_tx(endpoint, 17, "\n\r++ Connected ++")
+    call system_endpoint_tx(endpoint, 26, "\n\r++ Connection interval: ")	
+    call system_endpoint_tx(endpoint, 4, conn_interval)
+    call system_endpoint_tx(endpoint, 4, " ++\n")
+
+   call system_endpoint_set_watermarks(endpoint, 1, 0) # set RX watermark
+    
+    call attclient_attribute_write(connection, xgatt_data + 1, 1, 2) #xgatt_data+1 
+end
+
+event system_endpoint_watermark_rx(curr_endpoint, size)
+		
+        in_len = size
+        if in_len > 20 then
+            in_len = 20
+        end if
+		# enable the following line only if mcu isn't echoing back as well.
+		call system_endpoint_tx(endpoint, in_len, in(0:in_len)) # echo back to terminal for debugging
+		call system_endpoint_set_watermarks(endpoint, 0, $ff) # disable RX watermark
+		call system_endpoint_rx(endpoint, in_len)(result, in_len, in(0:in_len))
+        call attclient_attribute_write(0, xgatt_data, in_len, in(0:in_len))
+    
+end
+
+event attclient_procedure_completed(connection, results, handle)
+        # call system_endpoint_tx(endpoint, 33, "\n\r attc_proc_complete \n\r")
+	
+    if (handle = xgatt_data + 1) then # it was xgatt_data + 1 
+       call system_endpoint_tx(endpoint, 43, "\n\r++ Remote CCC set to start indications ++")
+       call system_endpoint_tx(endpoint, 46, "\n\r++ Transparent data exchange can start ++\n\n\r")
+    end if
+
+    if (handle = xgatt_data) then
+        call system_endpoint_set_watermarks(endpoint, 1, $ff) # set RX watermark
+    end if
+    
+end
+
+event attclient_attribute_value(connection, handle, type, value_len, value_data)
+       #call system_endpoint_tx(endpoint, 26, "\n\r attclient_att_value \n\n\r") #for debugging
+	
+    if handle = xgatt_data then
+        out(0:value_len) = value_data(0:value_len)
+        out_len = value_len
+        call system_endpoint_set_watermarks(endpoint, $ff, out_len) # set TX watermark
+    end if
+    
+end
+
+event system_endpoint_watermark_tx(curr_endpoint, size)
+
+    if curr_endpoint = endpoint then
+        call system_endpoint_set_watermarks(endpoint, $ff, 0) # disable TX watermark
+        call system_endpoint_tx(endpoint, out_len, out(0:out_len))
+        call attclient_indicate_confirm(0)
+    end if
+    
+end
+#event hareware_soft_timer(handle)
+	#call_hareware_io_port_read(port, mask)(result, port, data)
+	#if handle = 1 then
+	#end if
+#end
+event hardware_io_port_status(delta, port, irq, state)
+	#call system_endpoint_tx(system_endpoint_uart1, 17, "\n Interrupt hit\r\n")
+	#call system_endpoint_tx(system_endpoint_uart1, 10, delta) # try to print the time stamp of the timer
+	#call hardware_set_soft_timer(time, handle, single_shot)(result)
+	if(delta - last_press) >= 8000 || (delta < last_press && ($7FFFFFFF - last_press + delta) > 8000) then
+		last_press = delta
+	
+		
+		#call hardware_set_soft_timer(1000, button_press, 1)
+		if port = 0 then
+			if (irq & 1) = 1 then	
+				#P0_0 is HIGH and the source of this interrupt
+				call system_endpoint_tx(system_endpoint_uart1, 14, "P0_0 pressed\r\n")
+				call attclient_attribute_write(0, xgatt_data, 2, "UP")
+				
+			end if
+			if (irq & 2) = 2 then	
+				#P0_1 is HIGH and the source of this interrupt
+				call system_endpoint_tx(system_endpoint_uart1, 14, "P0_1 pressed\r\n")
+				call attclient_attribute_write(0, xgatt_data, 2, "DN")
+			end if
+			# store state of Port 0 now, since we already have it
+			io_status(0:1) = state
+			
+			# read state of Port 1
+			call hardware_io_port_read(1, $ff)(ipr_result, ipr_port, ipr_data)
+			io_status(1:1) = ipr_data
+			
+			# state of Port 2 read later, since we have to do it in either interrupt case
+		end if
+		if port = 1 then
+#		if (irq & 64) = 64 then	
+#			#P1_6 is HIGH and the source of this interrupt
+#			call system_endpoint_tx(system_endpoint_uart1, 14, "P1_6 pressed\r\n")
+#		
+#			#toggle advertising mode for run
+#			if advertising = 0 then
+#				# was off, so turn it on
+#				call gap_set_mode(gap_general_discoverable, gap_undirected_connectable)
+#				advertising = 1
+#			else
+#				# was on, so turn it off
+#				call gap_set_mode(gap_non_discoverable, gap_non_connectable)
+#				advertising = 0
+#			end if
+#		end if
+		
+			# read state of Port 0
+			call hardware_io_port_read(0,$ff)(ipr_result, ipr_port, ipr_data)
+			io_status(0:1) = ipr_data
+			
+			# store state of Port 1 now, since we already have it
+			io_status(1:1) = state
+			
+			# state of Port 2 read later, since we have to do it in either interrupt case
+		end if
+		
+		# read state of Port 2
+		call hardware_io_port_read(2, $ff)(ipr_result, ipr_port, ipr_data)
+		io_status(2:1) = ipr_data
+		
+		# update characteristic value in gatt file(will push data if client has subscribed to notifications/indications)
+		# call attributes_write(c_gpio_status, 0, 3, io_status(0:3))
+	end if	
+end
+	
+
+event connection_disconnected(conn, reas)
+		connected = 0 #set connection status to disconnected
+    call system_endpoint_tx(endpoint, 22, "\n\n\r-- Disconnected --\n")
+    call system_endpoint_tx(endpoint, 17, "\r-- Reason code: ")
+    call system_endpoint_tx(endpoint, 2, reas)
+    call system_endpoint_tx(endpoint, 4, " --\n")
+
+    call system_endpoint_set_watermarks(endpoint, 0, 0) # disable watermarks
+    
+    call gap_set_scan_parameters(1600, 800, 1)
+    call gap_discover(2)
+    
+end

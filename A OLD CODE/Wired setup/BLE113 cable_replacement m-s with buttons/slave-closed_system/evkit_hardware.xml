@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<hardware>
+    <sleeposc enable="true" ppm="30" />
+    <usb enable="false" />
+    <sleep enable="true" />
+	<wakeup_pin enable="true" port="0" pin="1" />
+    <txpower power="15" bias="5" />
+	<!--slow_clock enable="true" /--> <!-- I think we can use this to save power if we don't need UART -->
+    <script enable="true" />
+    <usart channel="1" alternate="1" baud="9600" endpoint="none" />
+</hardware>
