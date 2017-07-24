@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<configuration>
+
+    <service uuid="1800">
+      <description>Generic Access Profile</description>
+
+      <characteristic uuid="2a00">
+        <properties read="true" const="true" />
+        <value>DKBLE113 thermometer</value>
+      </characteristic>
+
+      <characteristic uuid="2a01">
+        <properties read="true" const="true" />
+        <value type="hex">0768</value>
+      </characteristic>
+	  
+    </service>
+
+    <service uuid="180A" >
+	
+        <characteristic uuid="2A29">
+            <properties read="true" const="true" />
+            <value>Bluegiga</value>
+        </characteristic>
+		
+        <characteristic uuid="2A24">
+            <properties read="true" const="true" />
+            <value>BLE11x</value>
+        </characteristic>
+		
+		<characteristic uuid="2A25" id="xgatt_dis_2a25" >
+			<properties read="true" />
+            <value type="hex" length="6" />
+        </characteristic>	
+		
+    </service>
+
+    <service uuid="1809">
+	
+		<description>Health Thermometer Service</description>
+		
+		<characteristic uuid="2a1c" id="xgatt_htm_2a1c">
+			<description>Celsius temperature</description>
+			<properties indicate="true"/>
+			<value type="hex">0000000000</value>
+		</characteristic>
+	</service>
+	
+</configuration>

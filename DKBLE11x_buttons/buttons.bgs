@@ -1,0 +1,28 @@
+#Boot event listener
+event system_boot(major, minor, patch, build, ll_version, protocol_version, hw)
+	#set the display to command mode
+	call hardware_io_port_write(1,$7,$1)
+	call hardware_io_port_config_direction(1,$7)
+	#initialize the display
+	call hardware_spi_transfer(0,11,"\x30\x30\x30\x39\x14\x56\x6d\x70\x0c\x06\x01")
+	#set the display to data mode
+	call hardware_io_port_write(1,$7,$3)
+	# Update display
+	call hardware_spi_transfer(0,12,"Buttons demo")
+    #Enable IO interrupts from PORT 0 PINs P0_0 and P0_1 on rising edge
+    call hardware_io_port_config_irq(0,$3,0)
+end
+
+#HW interrupt listener
+event hardware_io_port_status(delta, port, irq, state)
+	#set the display to command mode
+	call hardware_io_port_write(1,$7,$1)
+	call hardware_io_port_config_direction(1,$7)
+	# Change display data address
+	call hardware_spi_transfer(0,1,"\xc0")
+	#set the display to data mode
+	call hardware_io_port_write(1,$7,$3)
+	# update display
+	call hardware_spi_transfer(0,15,"Button detected")
+end
+
